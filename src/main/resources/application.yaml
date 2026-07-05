@@ -1,0 +1,111 @@
+spring:
+  application:
+    name: api-gateway
+
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          routes:
+
+            # ═══════════════════════════════════════════════════
+            #  ⚠️ ORDRE CRITIQUE : la première route qui matche gagne.
+            #  /api/lawyers/** est servi par DEUX services différents
+            #  selon le sous-chemin exact (lawyer-service pour le
+            #  profil/recherche/avis, booking-service pour les
+            #  disponibilités/créneaux/tableau de bord), les routes
+            #  les plus spécifiques DOIVENT être déclarées avant les
+            #  routes génériques, sinon elles ne seront jamais atteintes.
+            # ═══════════════════════════════════════════════════
+
+            # ── booking-service - sous /api/lawyers/{id}/... (AVANT le catch-all lawyer-service) ──
+            - id: lawyer-availabilities
+              uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/lawyers/*/availabilities/**
+            - id: lawyer-slots
+              uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/lawyers/*/slots/**
+            - id: lawyer-bookings-dashboard
+              uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/lawyers/*/bookings
+
+            # ── lawyer-service - sous /api/lawyers/{id}/... (AVANT le catch-all) ──
+            - id: lawyer-reviews-public
+              uri: ${LAWYER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/lawyers/*/reviews
+
+            # ── lawyer-service - /api/lawyers/profile (AVANT le catch-all /api/lawyers/**) ──
+            - id: lawyer-profile
+              uri: ${LAWYER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/lawyers/profile
+
+            # ── lawyer-service - catch-all restant (/api/lawyers, /api/lawyers/{id}) ──
+            - id: lawyer-catchall
+              uri: ${LAWYER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/lawyers/**
+
+            - id: specialties
+              uri: ${LAWYER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/specialties/**
+
+            - id: reviews
+              uri: ${LAWYER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/reviews/**
+
+            # ── booking-service - routes non ambiguës ──
+            - id: bookings
+              uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/bookings/**
+
+            - id: waitlist
+              uri: ${BOOKING_SERVICE_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/waitlist/**
+
+            # ── auth-service ──
+            - id: auth
+              uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/auth/**
+
+            - id: users
+              uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/users/**
+
+            - id: admin
+              uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/admin/**
+
+            # ── notification-service ──
+            - id: notifications
+              uri: ${NOTIFICATION_SERVICE_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/notifications/**
+
+            # ── audit-service ──
+            - id: audit
+              uri: ${AUDIT_SERVICE_URL:http://localhost:8085}
+              predicates:
+                - Path=/api/audit/**
+
+server:
+  port: 8080
+
+# ═══════════════════════════════════════════════════════════
+#  JWT - validation uniquement (pas de génération, pas de rôle
+#  vérifié ici). Même secret que tous les autres services.
+#  En conteneur, surchargé par JWT_SECRET.
+# ═══════════════════════════════════════════════════════════
+jwt:
+  secret: ${JWT_SECRET:juribook-secret-key-must-be-at-least-256-bits-long-for-hs256}
