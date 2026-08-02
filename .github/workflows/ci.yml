@@ -1,0 +1,130 @@
+# ═══════════════════════════════════════════════════════════
+#  GitHub Actions CI/CD - api-gateway
+#  Pipeline : build → test → docker build & push (Scaleway) → deploy staging
+#  Déclenché sur push develop/features/test et pull request vers develop
+#
+#  Tests : unitaires Mockito (pas de BDD requise)
+#  Docker : image poussée vers Scaleway Container Registry sur push develop
+# ═══════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  push:
+    branches:
+      - develop
+      - features/test
+  pull_request:
+    branches:
+      - develop
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  #  Build + Tests Maven
+  #  Pas de PostgreSQL en CI - les tests unitaires
+  #  utilisent Mockito (pas de contexte Spring)
+  # ─────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build
+        run: mvn clean compile -B
+
+      - name: Test
+        run: mvn test -B
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: target/surefire-reports/
+
+  # ─────────────────────────────────────────────
+  #  Docker Build & Push vers Scaleway Container Registry
+  #  (sur push develop uniquement)
+  # ─────────────────────────────────────────────
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Scaleway Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: rg.fr-par.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            rg.fr-par.scw.cloud/juribook/api-gateway:${{ github.sha }}
+            rg.fr-par.scw.cloud/juribook/api-gateway:staging-latest
+
+  # ─────────────────────────────────────────────
+  #  Déploiement staging (cluster Kapsule)
+  #  (sur push develop uniquement, après le push Docker)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+
+    steps:
+      - name: Install Scaleway CLI
+        run: curl -s https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+
+      - name: Create Scaleway config file
+        run: mkdir -p ~/.config/scw && touch ~/.config/scw/config.yaml
+
+      - name: Configure Scaleway CLI
+        run: |
+          scw config set access-key="${{ secrets.SCW_ACCESS_KEY }}"
+          scw config set secret-key="${{ secrets.SCW_SECRET_KEY }}"
+          scw config set default-project-id="${{ secrets.SCW_PROJECT_ID }}"
+          scw config set default-organization-id="${{ secrets.SCW_ORGANIZATION_ID }}"
+          scw config set default-region=fr-par
+          scw config set default-zone=fr-par-1
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Fetch Kapsule kubeconfig
+        run: scw k8s kubeconfig install "${{ secrets.KAPSULE_CLUSTER_ID }}" region=fr-par
+
+      - name: Deploy new image to staging
+        run: |
+          kubectl set image deployment/api-gateway \
+            api-gateway=rg.fr-par.scw.cloud/juribook/api-gateway:${{ github.sha }} \
+            -n juribook
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/api-gateway -n juribook --timeout=180s
+
+      - name: Verify pod health
+        run: |
+          kubectl wait --for=condition=ready pod -l app=api-gateway -n juribook --timeout=120s
