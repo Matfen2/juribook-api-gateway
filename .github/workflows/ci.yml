@@ -14,6 +14,8 @@ on:
     branches:
       - develop
       - features/test
+    tags:
+      - 'v*.*.*'
   pull_request:
     branches:
       - develop
@@ -128,3 +130,86 @@ jobs:
       - name: Verify pod health
         run: |
           kubectl wait --for=condition=ready pod -l app=api-gateway -n juribook --timeout=120s
+
+  # ═══════════════════════════════════════════════════════════
+  #  PRODUCTION
+  #  Déclenché uniquement sur un tag de version (v1.0.0, v1.2.3...)
+  #  poussé sur main. Build l'image taguée avec le tag Git lui-même
+  #  (immutable, traçable), distincte des tags SHA du staging.
+  # ═══════════════════════════════════════════════════════════
+  docker-production:
+    name: Docker Build & Push (Production)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Scaleway Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: rg.fr-par.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            rg.fr-par.scw.cloud/juribook/api-gateway:${{ github.ref_name }}
+            rg.fr-par.scw.cloud/juribook/api-gateway:production-latest
+
+  # ─────────────────────────────────────────────
+  #  Déploiement en PRODUCTION - nécessite une
+  #  approbation manuelle (configurée sur l'Environment
+  #  GitHub "production" de ce dépôt, voir README).
+  #  Le job se met en pause ici tant qu'un reviewer
+  #  autorisé n'a pas validé dans l'onglet Actions.
+  # ─────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: docker-production
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+
+    steps:
+      - name: Install Scaleway CLI
+        run: curl -s https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+
+      - name: Create Scaleway config file
+        run: mkdir -p ~/.config/scw && touch ~/.config/scw/config.yaml
+
+      - name: Configure Scaleway CLI
+        run: |
+          scw config set access-key="${{ secrets.SCW_ACCESS_KEY }}"
+          scw config set secret-key="${{ secrets.SCW_SECRET_KEY }}"
+          scw config set default-project-id="${{ secrets.SCW_PROJECT_ID }}"
+          scw config set default-organization-id="${{ secrets.SCW_ORGANIZATION_ID }}"
+          scw config set default-region=fr-par
+          scw config set default-zone=fr-par-1
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Fetch Kapsule kubeconfig
+        run: scw k8s kubeconfig install "${{ secrets.KAPSULE_CLUSTER_ID }}" region=fr-par
+
+      - name: Deploy new image to production
+        run: |
+          kubectl set image deployment/api-gateway \
+            api-gateway=rg.fr-par.scw.cloud/juribook/api-gateway:${{ github.ref_name }} \
+            -n juribook-production
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/api-gateway -n juribook-production --timeout=180s
+
+      - name: Verify pod health
+        run: |
+          kubectl wait --for=condition=ready pod -l app=api-gateway -n juribook-production --timeout=120s
