@@ -44,7 +44,7 @@ import java.util.Set;
 @Configuration
 public class CorsConfig {
 
-    private static final List<String> ALLOWED_ORIGINS = List.of("http://localhost:5173");
+    private static final List<String> ALLOWED_ORIGINS = List.of("http://localhost:5173", "https://juribook.fr", "https://www.juribook.fr");
     private static final List<String> ALLOWED_METHODS = List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
     private static final List<String> ALLOWED_HEADERS = List.of("Authorization", "Content-Type", "Accept");
 
